@@ -16,6 +16,7 @@
  */
 package com.nvidia.icms.outbound.nats;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.nvidia.icms.configuration.bean.NatsConfigurationProperties;
 import io.nats.client.Connection;
 import io.nats.client.ConnectionListener;
@@ -27,6 +28,8 @@ import io.nats.client.Options;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.RandomUtils;
 import org.springframework.stereotype.Component;
@@ -47,6 +50,16 @@ public class NatsConnectionFactory {
     private volatile Connection natsConnection;
 
     /**
+     * Set when the most recent connection rebuild failed and cleared on the next successful
+     * connect. Read by {@link NatsHealthIndicator} to report the last connection failure.
+     */
+    private final AtomicBoolean lastConnectFailed = new AtomicBoolean(false);
+    private volatile String lastConnectError;
+
+    private final AtomicLong resourceRepairGeneration = new AtomicLong();
+    private final AtomicLong completedResourceRepairGeneration = new AtomicLong();
+
+    /**
      * Constructor to initialize the NATS connection factory with configuration properties.
      *
      * @param natsConfigurationProperties Configuration properties for NATS connection.
@@ -63,9 +76,18 @@ public class NatsConnectionFactory {
      * @throws IOException          If an I/O error occurs during the connection process.
      * @throws InterruptedException If the connection attempt is interrupted.
      */
-    public synchronized Connection createConnectionIfNeeded() throws IOException, InterruptedException {
+    public synchronized Connection createConnectionIfNeeded()
+            throws IOException, InterruptedException {
         if (natsConnection == null || natsConnection.getStatus() == Connection.Status.CLOSED) {
-            natsConnection = connectToNats();
+            try {
+                natsConnection = connectToNats();
+                lastConnectError = null;
+                lastConnectFailed.set(false);
+            } catch (IOException | InterruptedException | RuntimeException e) {
+                lastConnectError = e.getMessage();
+                lastConnectFailed.set(true);
+                throw e;
+            }
         }
         return natsConnection;
     }
@@ -97,6 +119,7 @@ public class NatsConnectionFactory {
     synchronized void invalidateClosedConnection(Connection connection) {
         if (natsConnection == connection && connection.getStatus() == Connection.Status.CLOSED) {
             natsConnection = null;
+            requireResourceRepair();
         }
     }
 
@@ -105,6 +128,38 @@ public class NatsConnectionFactory {
      */
     Connection getCachedConnection() {
         return natsConnection;
+    }
+
+    /**
+     * Returns whether the most recent attempt to (re)build the connection failed.
+     * Intended for health reporting.
+     */
+    boolean isLastConnectFailed() {
+        return lastConnectFailed.get();
+    }
+
+    /**
+     * Returns the failure message of the most recent connect attempt, or null if the
+     * last attempt succeeded. Intended for health reporting.
+     */
+    String getLastConnectError() {
+        return lastConnectError;
+    }
+
+    boolean isResourceRepairRequired() {
+        return completedResourceRepairGeneration.get() < resourceRepairGeneration.get();
+    }
+
+    long requireResourceRepair() {
+        return resourceRepairGeneration.incrementAndGet();
+    }
+
+    long getResourceRepairGeneration() {
+        return resourceRepairGeneration.get();
+    }
+
+    void markResourceRepairComplete(long generation) {
+        completedResourceRepairGeneration.accumulateAndGet(generation, Math::max);
     }
 
     Connection connectToNats()
@@ -176,36 +231,45 @@ public class NatsConnectionFactory {
      * @return ConnectionListener instance to handle connection events.
      */
     private ConnectionListener getNatsConnectionListener() {
-        return (connection, events) -> {
-            log.info("NATS connection event {} {}", connection.getServerInfo(), events);
-            if (events == Events.CLOSED) {
-                invalidateClosedConnection(connection);
-            } else if (events == Events.LAME_DUCK) {
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        // Add jitter to avoid simultaneous reconnections
-                        Thread.sleep(RandomUtils.nextInt(0, 5000));
-                        log.info("Client ID {} force reconnecting to NATS",
-                                 connection.getServerInfo().getClientId());
-                        connection.forceReconnect(
-                                ForceReconnectOptions.builder()
-                                        .flush(natsConfigurationProperties.getForceReconnectFlush())
-                                        .build());
-                        log.info("Client ID {} reconnected to NATS",
-                                 connection.getServerInfo().getClientId());
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        log.warn("Client ID {} reconnect interrupted",
-                                 connection.getServerInfo().getClientId(), e);
-                        throw new RuntimeException(e);
-                    } catch (Exception e) {
-                        log.warn("Client ID {} failed to reconnect to NATS",
-                                 connection.getServerInfo().getClientId(), e);
-                        throw new RuntimeException(e);
-                    }
-                });
+        return this::handleConnectionEvent;
+    }
+
+    @VisibleForTesting
+    void handleConnectionEvent(Connection connection, Events event) {
+        log.info("NATS connection event {} {}", connection.getServerInfo(), event);
+        if (event == Events.CLOSED) {
+            invalidateClosedConnection(connection);
+        } else if (event == Events.RECONNECTED) {
+            synchronized (this) {
+                if (natsConnection == connection) {
+                    requireResourceRepair();
+                }
             }
-        };
+        } else if (event == Events.LAME_DUCK) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    // Add jitter to avoid simultaneous reconnections
+                    Thread.sleep(RandomUtils.nextInt(0, 5000));
+                    log.info("Client ID {} force reconnecting to NATS",
+                             connection.getServerInfo().getClientId());
+                    connection.forceReconnect(
+                            ForceReconnectOptions.builder()
+                                    .flush(natsConfigurationProperties.getForceReconnectFlush())
+                                    .build());
+                    log.info("Client ID {} reconnected to NATS",
+                             connection.getServerInfo().getClientId());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.warn("Client ID {} reconnect interrupted",
+                             connection.getServerInfo().getClientId(), e);
+                    throw new RuntimeException(e);
+                } catch (Exception e) {
+                    log.warn("Client ID {} failed to reconnect to NATS",
+                             connection.getServerInfo().getClientId(), e);
+                    throw new RuntimeException(e);
+                }
+            });
+        }
     }
 
     /**

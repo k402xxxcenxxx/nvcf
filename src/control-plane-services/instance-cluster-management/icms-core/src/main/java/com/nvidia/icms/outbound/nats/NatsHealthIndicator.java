@@ -38,12 +38,30 @@ public class NatsHealthIndicator implements HealthIndicator {
     public Health health() {
         Connection connection = natsConnectionFactory.getCachedConnection();
         if (connection == null) {
-            return Health.down().withDetail("status", "NOT_INITIALIZED").build();
+            boolean connectFailed = natsConnectionFactory.isLastConnectFailed();
+            String status = connectFailed
+                    ? "CONNECT_FAILED"
+                    : "NOT_INITIALIZED";
+            Health.Builder health = (connectFailed ? Health.down() : Health.up())
+                    .withDetail("status", status);
+            String lastConnectError = natsConnectionFactory.getLastConnectError();
+            if (StringUtils.isNotBlank(lastConnectError)) {
+                health.withDetail("lastError", lastConnectError);
+            }
+            return health.build();
         }
 
         Connection.Status status = connection.getStatus();
-        Health.Builder health = status == Connection.Status.CONNECTED ? Health.up() : Health.down();
-        health.withDetail("status", status == null ? "UNKNOWN" : status.name());
+        boolean repairRequired = natsConnectionFactory.isResourceRepairRequired();
+        boolean connected = status == Connection.Status.CONNECTED;
+        Health.Builder health = connected && !repairRequired
+                ? Health.up()
+                : Health.down();
+        health.withDetail(
+                "status",
+                connected && repairRequired
+                        ? "RESOURCE_REPAIR_REQUIRED"
+                        : getStatusName(status));
 
         String connectedUrl = connection.getConnectedUrl();
         if (StringUtils.isNotBlank(connectedUrl)) {
@@ -54,5 +72,9 @@ public class NatsHealthIndicator implements HealthIndicator {
             health.withDetail("lastError", lastError);
         }
         return health.build();
+    }
+
+    private String getStatusName(Connection.Status status) {
+        return status == null ? "UNKNOWN" : status.name();
     }
 }

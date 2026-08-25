@@ -31,11 +31,23 @@ class NatsHealthIndicatorTest {
     private final NatsHealthIndicator healthIndicator = new NatsHealthIndicator(factory);
 
     @Test
-    void health_isDownBeforeConnectionInitialization() {
+    void health_isUpBeforeConnectionInitialization() {
+        var health = healthIndicator.health();
+
+        assertEquals(Status.UP, health.getStatus());
+        assertEquals("NOT_INITIALIZED", health.getDetails().get("status"));
+    }
+
+    @Test
+    void health_isDownWhenLastConnectionRebuildFailed() {
+        when(factory.isLastConnectFailed()).thenReturn(true);
+        when(factory.getLastConnectError()).thenReturn("Connection refused");
+
         var health = healthIndicator.health();
 
         assertEquals(Status.DOWN, health.getStatus());
-        assertEquals("NOT_INITIALIZED", health.getDetails().get("status"));
+        assertEquals("CONNECT_FAILED", health.getDetails().get("status"));
+        assertEquals("Connection refused", health.getDetails().get("lastError"));
     }
 
     @Test
@@ -51,6 +63,19 @@ class NatsHealthIndicatorTest {
         assertEquals("CONNECTED", health.getDetails().get("status"));
         assertEquals("nats://nats:4222", health.getDetails().get("server"));
         assertNull(health.getDetails().get("lastError"));
+    }
+
+    @Test
+    void health_isDownWhileConnectedResourcesNeedRepair() {
+        Connection connection = mock(Connection.class);
+        when(factory.getCachedConnection()).thenReturn(connection);
+        when(factory.isResourceRepairRequired()).thenReturn(true);
+        when(connection.getStatus()).thenReturn(Connection.Status.CONNECTED);
+
+        var health = healthIndicator.health();
+
+        assertEquals(Status.DOWN, health.getStatus());
+        assertEquals("RESOURCE_REPAIR_REQUIRED", health.getDetails().get("status"));
     }
 
     @Test

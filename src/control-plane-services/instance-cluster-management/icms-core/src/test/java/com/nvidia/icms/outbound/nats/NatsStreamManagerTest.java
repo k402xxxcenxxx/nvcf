@@ -104,6 +104,28 @@ class NatsStreamManagerTest {
         verify(jetStreamManagement, times(2)).addStream(any(StreamConfiguration.class));
     }
 
+    @Test
+    void reconcileNatsResourcesStrict_reconcilesConfiguredStreamsAndConsumers()
+            throws Exception {
+        when(natsConfigurationProperties.isCreateNatsStreams()).thenReturn(true);
+        when(natsConfigurationProperties.isCreateNatsConsumers()).thenReturn(true);
+        when(jetStreamManagement.getStreamInfo(anyString())).thenReturn(mock(StreamInfo.class));
+
+        natsStreamManager.reconcileNatsResourcesStrict();
+
+        verify(jetStreamManagement, times(2)).getStreamInfo(anyString());
+        verify(streamContext, times(2)).createOrUpdateConsumer(any(ConsumerConfiguration.class));
+    }
+
+    @Test
+    void reconcileNatsResourcesStrict_propagatesStreamFailure() throws Exception {
+        when(natsConfigurationProperties.isCreateNatsStreams()).thenReturn(true);
+        when(jetStreamManagement.getStreamInfo(anyString()))
+                .thenThrow(new IOException("Stream lookup failed"));
+
+        assertThrows(IOException.class, natsStreamManager::reconcileNatsResourcesStrict);
+    }
+
     /**
      * Tests successful creation of a stream.
      */

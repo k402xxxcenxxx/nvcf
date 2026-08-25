@@ -16,8 +16,14 @@
  */
 package com.nvidia.icms.outbound.nats;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
@@ -26,6 +32,8 @@ import static org.mockito.Mockito.when;
 
 import com.nvidia.icms.configuration.bean.NatsConfigurationProperties;
 import io.nats.client.Connection;
+import io.nats.client.ConnectionListener.Events;
+import java.io.IOException;
 import org.junit.jupiter.api.Test;
 
 class NatsConnectionFactoryTest {
@@ -74,5 +82,78 @@ class NatsConnectionFactoryTest {
 
         assertSame(replacementConnection, factory.createConnectionIfNeeded());
         verify(factory, times(2)).connectToNats();
+        assertFalse(factory.isResourceRepairRequired());
+    }
+
+    @Test
+    void reconnectedEvent_requiresResourceRepair() throws Exception {
+        NatsConnectionFactory factory = spy(new NatsConnectionFactory(
+                mock(NatsConfigurationProperties.class)));
+        Connection connection = mock(Connection.class);
+        doReturn(connection).when(factory).connectToNats();
+        factory.createConnectionIfNeeded();
+
+        factory.handleConnectionEvent(connection, Events.RECONNECTED);
+
+        assertTrue(factory.isResourceRepairRequired());
+    }
+
+    @Test
+    void closedEvent_invalidatesConnectionAndRequiresResourceRepair() throws Exception {
+        NatsConnectionFactory factory = spy(new NatsConnectionFactory(
+                mock(NatsConfigurationProperties.class)));
+        Connection connection = mock(Connection.class);
+        when(connection.getStatus()).thenReturn(Connection.Status.CLOSED);
+        doReturn(connection).when(factory).connectToNats();
+        factory.createConnectionIfNeeded();
+
+        factory.handleConnectionEvent(connection, Events.CLOSED);
+
+        assertNull(factory.getCachedConnection());
+        assertTrue(factory.isResourceRepairRequired());
+    }
+
+    @Test
+    void completingOlderRepair_doesNotClearNewerRepairRequest() {
+        NatsConnectionFactory factory = new NatsConnectionFactory(
+                mock(NatsConfigurationProperties.class));
+        long firstGeneration = factory.requireResourceRepair();
+        factory.requireResourceRepair();
+
+        factory.markResourceRepairComplete(firstGeneration);
+
+        assertTrue(factory.isResourceRepairRequired());
+    }
+
+    @Test
+    void createConnection_marksLastConnectFailedWhenConnectThrows() throws Exception {
+        NatsConnectionFactory factory = spy(new NatsConnectionFactory(
+                mock(NatsConfigurationProperties.class)));
+        doThrow(new IOException("Connection refused")).when(factory).connectToNats();
+
+        assertThrows(IOException.class, factory::createConnectionIfNeeded);
+
+        assertTrue(factory.isLastConnectFailed());
+        assertEquals("Connection refused", factory.getLastConnectError());
+        assertNull(factory.getCachedConnection());
+    }
+
+    @Test
+    void createConnection_clearsLastConnectFailedAfterSuccessfulReconnect() throws Exception {
+        NatsConnectionFactory factory = spy(new NatsConnectionFactory(
+                mock(NatsConfigurationProperties.class)));
+        Connection connection = mock(Connection.class);
+        when(connection.getStatus()).thenReturn(Connection.Status.CONNECTED);
+        doThrow(new IOException("Connection refused"))
+                .doReturn(connection)
+                .when(factory).connectToNats();
+
+        assertThrows(IOException.class, factory::createConnectionIfNeeded);
+        assertTrue(factory.isLastConnectFailed());
+
+        assertSame(connection, factory.createConnectionIfNeeded());
+
+        assertFalse(factory.isLastConnectFailed());
+        assertNull(factory.getLastConnectError());
     }
 }

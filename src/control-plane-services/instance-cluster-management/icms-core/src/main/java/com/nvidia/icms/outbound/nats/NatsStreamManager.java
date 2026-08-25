@@ -131,12 +131,9 @@ public class NatsStreamManager {
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                if (wantStreams) {
-                    validateNatsStreamsStrict();
-                }
-                if (wantConsumers) {
-                    createNatsConsumersStrict();
-                }
+                long repairGeneration = natsConnectionFactory.getResourceRepairGeneration();
+                reconcileNatsResourcesStrict();
+                natsConnectionFactory.markResourceRepairComplete(repairGeneration);
                 log.info(
                         "NATS streams/consumers initialized on attempt {}/{}",
                         attempt,
@@ -171,6 +168,18 @@ public class NatsStreamManager {
                         maxAttempts,
                         lastError == null ? "unknown" : lastError.getMessage()),
                 lastError);
+    }
+
+    /**
+     * Reconciles every configured stream and consumer, propagating failures so callers can retry.
+     */
+    void reconcileNatsResourcesStrict() throws Exception {
+        if (natsConfigurationProperties.isCreateNatsStreams()) {
+            validateNatsStreamsStrict();
+        }
+        if (natsConfigurationProperties.isCreateNatsConsumers()) {
+            createNatsConsumersStrict();
+        }
     }
 
     /**
