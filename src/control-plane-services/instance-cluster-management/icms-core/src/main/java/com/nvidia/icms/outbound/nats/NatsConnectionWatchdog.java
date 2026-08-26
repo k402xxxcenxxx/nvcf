@@ -46,8 +46,8 @@ public class NatsConnectionWatchdog {
         this.natsStreamManager = natsStreamManager;
     }
 
-    @Scheduled(initialDelayString = "${icms.nats.connection-watchdog-initial-delay:PT1M}",
-               fixedDelayString = "${icms.nats.connection-watchdog-interval:PT30S}")
+    @Scheduled(initialDelayString = "${icms.nats.connection-watch-dog.initial-delay:PT1M}",
+               fixedDelayString = "${icms.nats.connection-watch-dog.interval:PT30S}")
     public void checkConnection() {
         Connection connection = natsConnectionFactory.getCachedConnection();
         Connection.Status status = connection == null ? null : connection.getStatus();

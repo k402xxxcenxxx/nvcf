@@ -431,8 +431,9 @@ icms:
     force-reconnect-flush: 5s
     delay-between-messages: 100ms
     message-ttl: 96h
-    connection-watchdog-interval: PT30S
-    connection-watchdog-initial-delay: PT1M
+    connection-watch-dog:
+      initial-delay: PT1M
+      interval: PT30S
     global-stream-validation-task-lock-ttl: 120s
     global-stream-validation-interval: PT3M
     global-stream-validation-initial-delay: PT3M

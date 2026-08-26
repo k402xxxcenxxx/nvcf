@@ -49,10 +49,8 @@ public class NatsConnectionFactory {
     // volatile needs to safely read without synchronization in getCachedConnection method
     private volatile Connection natsConnection;
 
-    /**
-     * Set when the most recent connection rebuild failed and cleared on the next successful
-     * connect. Read by {@link NatsHealthIndicator} to report the last connection failure.
-     */
+    // Set when the most recent connection rebuild failed and cleared on the next successful
+    // connect. Read by {@link NatsHealthIndicator} to report the last connection failure.
     private final AtomicBoolean lastConnectFailed = new AtomicBoolean(false);
     private volatile String lastConnectError;
 
@@ -86,6 +84,8 @@ public class NatsConnectionFactory {
             } catch (IOException | InterruptedException | RuntimeException e) {
                 lastConnectError = e.getMessage();
                 lastConnectFailed.set(true);
+                // reset cached connection as its status is not CLOSED anymore
+                natsConnection = null;
                 throw e;
             }
         }
