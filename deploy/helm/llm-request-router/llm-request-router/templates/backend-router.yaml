@@ -79,7 +79,7 @@ spec:
             - --reverse-tunnel-listen-addr=0.0.0.0:{{ .Values.llmRequestRouter.backendRouter.service.reverseTunnelPort }}
             - --health-listen-addr=0.0.0.0:{{ .Values.llmRequestRouter.backendRouter.service.healthPort }}
             - --target-namespace={{ include "llm-request-router.namespace" . }}
-            - --target-service-name={{ include "llm-request-router.fullname" . }}
+            - --target-service-name={{ .Values.llmRequestRouter.service.headlessName }}
             - --advertised-hostname-template={{ $advertisedHostnameTemplate }}
             - --grpc-port-name=grpc
             - --quic-port-name=quic

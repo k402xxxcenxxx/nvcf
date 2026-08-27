@@ -40,6 +40,13 @@ statefulset_args() {
   yq -r 'select(.kind == "StatefulSet" and .metadata.name == "llm-request-router") | .spec.template.spec.containers[0].args[]' "${manifest}"
 }
 
+service_field() {
+  local manifest="$1"
+  local service_name="$2"
+  local expression="$3"
+  yq -r "select(.kind == \"Service\" and .metadata.name == \"${service_name}\") | ${expression}" "${manifest}" | head -n1
+}
+
 default_manifest="${tmp_dir}/default.yaml"
 render "${default_manifest}"
 
@@ -47,6 +54,10 @@ render "${default_manifest}"
 [ "$(statefulset_field "${default_manifest}" ".spec.serviceName")" = "llm-request-router-headless" ] || fail "default StatefulSet serviceName is not llm-request-router-headless"
 [ "$(statefulset_field "${default_manifest}" ".spec.replicas")" = "3" ] || fail "default replica count is not 3"
 [ "$(statefulset_field "${default_manifest}" ".spec.podManagementPolicy")" = "Parallel" ] || fail "default StatefulSet podManagementPolicy is not Parallel"
+[ "$(service_field "${default_manifest}" "llm-request-router" '.spec.ports[] | select(.name == "http") | .port')" = "8000" ] || fail "request-facing Service does not expose HTTP port 8000"
+[ "$(service_field "${default_manifest}" "llm-request-router" '.spec.publishNotReadyAddresses')" != "true" ] || fail "request-facing Service must honor pod readiness"
+[ "$(service_field "${default_manifest}" "llm-request-router-headless" '.spec.publishNotReadyAddresses')" = "true" ] || fail "headless discovery Service must publish unready addresses"
+[ -z "$(service_field "${default_manifest}" "llm-request-router-headless" '.spec.ports[] | select(.name == "http") | .port')" ] || fail "headless discovery Service must not expose request-facing HTTP"
 
 default_args="$(statefulset_args "${default_manifest}")"
 printf '%s\n' "${default_args}" | grep -qx -- "--stargate-discovery-dns-name=llm-request-router-headless.${namespace}.svc.cluster.local" || fail "default render missing headless discovery DNS arg"
